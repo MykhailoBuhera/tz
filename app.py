@@ -36,7 +36,7 @@ def generate_payment_link(amount, description, order_id):
         'description': description,
         'order_id': order_id,
         'result_url': 'https://t.me/tzrobota_bot',
-        'server_url': 'https://9c10-194-44-35-227.ngrok-free.app/webhook'  # replace with your webhook URL
+        'server_url': 'https://c701-194-44-35-227.ngrok-free.app/webhook'  # replace with your webhook URL
     }
     data_str = base64.b64encode(json.dumps(data).encode()).decode()
     signature = base64.b64encode(hashlib.sha1((PRIVATE_KEY + data_str + PRIVATE_KEY).encode()).digest()).decode()
