@@ -1,5 +1,5 @@
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import Message
+from aiogram.types import Message, FSInputFile
 from aiogram.filters import Command
 from aiohttp import web
 import asyncio
@@ -20,9 +20,9 @@ dp = Dispatcher()
 
 # Products list
 products = [
-    {'name': 'Product 1', 'description': 'Short description 1', 'price': 10.0},
-    {'name': 'Product 2', 'description': 'Short description 2', 'price': 20.0},
-    {'name': 'Product 3', 'description': 'Short description 3', 'price': 30.0}
+    {'name': 'Product 1', 'description': 'Short description 1', 'price': 10.0, 'photo': 'images/product1.jpg'},
+    {'name': 'Product 2', 'description': 'Short description 2', 'price': 20.0, 'photo': 'images/product2.jpg'},
+    {'name': 'Product 3', 'description': 'Short description 3', 'price': 30.0, 'photo': 'images/product3.jpg'}
 ]
 
 # LiqPay payment link generator
@@ -36,7 +36,7 @@ def generate_payment_link(amount, description, order_id):
         'description': description,
         'order_id': order_id,
         'result_url': 'https://t.me/tzrobota_bot',
-        'server_url': 'https://c701-194-44-35-227.ngrok-free.app/webhook'  # replace with your webhook URL
+        'server_url': 'https://6c3e-194-44-35-227.ngrok-free.app/webhook'  # replace with your webhook URL
     }
     data_str = base64.b64encode(json.dumps(data).encode()).decode()
     signature = base64.b64encode(hashlib.sha1((PRIVATE_KEY + data_str + PRIVATE_KEY).encode()).digest()).decode()
@@ -54,11 +54,11 @@ async def start(message: Message):
 # Products command
 @dp.message(Command('products'))
 async def show_products(message: Message):
-    text = "Ось наші товари:\n"
     for product in products:
-        text += f"{product['name']}: {product['description']} — {product['price']} грн\n"
-        text += f"/buy_{product['name'].replace(' ', '_')}\n"
-    await message.reply(text)
+        photo = FSInputFile(product['photo'])
+        text = (f"{product['name']}: {product['description']} — {product['price']} грн\n"
+                f"/buy_{product['name'].replace(' ', '_')}")
+        await message.answer_photo(photo=photo, caption=text)
 
 # Buy commands
 for product in products:
@@ -77,8 +77,6 @@ for product in products:
 
 # LiqPay webhook handler
 logging.basicConfig(level=logging.INFO)  # Налаштування логування
-
-logging.basicConfig(level=logging.INFO)
 
 async def handle_webhook(request):
     data = await request.post()
@@ -117,11 +115,11 @@ async def handle_webhook(request):
 
         logging.info(f"Order {order_id} marked as paid")
 
-        # Відправка повідомлення користувачеві через контекстний менеджер
         async with Bot(token=TOKEN) as bot:
             await bot.send_message(chat_id=user_id, text="✅ Дякуємо за покупку! Ваш платіж успішно отримано.")
 
     return web.Response(text='OK')
+
 # Check payment command
 @dp.message(Command('check_payment'))
 async def check_payment(message: Message):
@@ -134,7 +132,6 @@ async def check_payment(message: Message):
             await message.reply("✅ Ваш платіж успішно отримано!")
         else:
             await message.reply("❌ Оплата ще не підтверджена.")
-
 
 # Run bot and webhook server
 async def main():
