@@ -36,11 +36,30 @@ def generate_payment_link(amount, description, order_id):
         'description': description,
         'order_id': order_id,
         'result_url': 'https://t.me/tzrobota_bot',
-        'server_url': 'https://27e9-194-44-35-227.ngrok-free.app/webhook'  # replace with your webhook URL
+        'server_url': 'https://2e79-95-46-140-42.ngrok-free.app/webhook'  # replace with your webhook URL
     }
     data_str = base64.b64encode(json.dumps(data).encode()).decode()
     signature = base64.b64encode(hashlib.sha1((PRIVATE_KEY + data_str + PRIVATE_KEY).encode()).digest()).decode()
     return f'https://www.liqpay.ua/api/3/checkout?data={data_str}&signature={signature}'
+
+# Create a function to manage the user's cart
+def get_cart(user_id):
+    with sqlite3.connect('shop.db') as conn:
+        c = conn.cursor()
+        c.execute('SELECT product FROM cart WHERE user_id = ?', (user_id,))
+        return [row[0] for row in c.fetchall()]
+
+def add_to_cart(user_id, product_name):
+    with sqlite3.connect('shop.db') as conn:
+        c = conn.cursor()
+        c.execute('INSERT INTO cart (user_id, product) VALUES (?, ?)', (user_id, product_name))
+        conn.commit()
+
+def clear_cart(user_id):
+    with sqlite3.connect('shop.db') as conn:
+        c = conn.cursor()
+        c.execute('DELETE FROM cart WHERE user_id = ?', (user_id,))
+        conn.commit()
 
 # Start command
 @dp.message(Command('start'))
@@ -57,26 +76,55 @@ async def show_products(message: Message):
     for product in products:
         photo = FSInputFile(product['photo'])
         text = (f"{product['name']}: {product['description']} — {product['price']} грн\n"
-                f"/buy_{product['name'].replace(' ', '_')}")
+                f"/add_to_cart_{product['name'].replace(' ', '_')}")
         await message.answer_photo(photo=photo, caption=text)
 
-# Buy commands
+# Add to cart command
 for product in products:
-    async def buy_product(message: Message, product=product):
-        order_id = f"order_{message.from_user.id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        payment_link = generate_payment_link(product['price'], product['name'], order_id)
-        await message.reply(f"Оплатіть за посиланням: {payment_link}")
+    async def add_to_cart_command(message: Message, product=product):
+        add_to_cart(message.from_user.id, product['name'])
+        await message.reply(f"✅ {product['name']} додано до кошика!")
 
-        with sqlite3.connect('shop.db') as conn:
-            c = conn.cursor()
-            c.execute('INSERT INTO purchases (user_id, product, price, date, status, order_id) VALUES (?, ?, ?, datetime("now"), ?, ?)', 
-                      (message.from_user.id, product['name'], product['price'], 'pending', order_id))
-            conn.commit()
+    dp.message.register(add_to_cart_command, Command(f'add_to_cart_{product["name"].replace(" ", "_")}'))
 
-    dp.message.register(buy_product, Command(f'buy_{product["name"].replace(" ", "_")}'))
+# View cart command
+@dp.message(Command('view_cart'))
+async def view_cart(message: Message):
+    cart = get_cart(message.from_user.id)
+    if cart:
+        cart_items = "\n".join(cart)
+        await message.reply(f"Ваш кошик:\n{cart_items}")
+    else:
+        await message.reply("Ваш кошик порожній.")
+
+# Clear cart command
+@dp.message(Command('clear_cart'))
+async def clear_cart_command(message: Message):
+    clear_cart(message.from_user.id)
+    await message.reply("🗑️ Ваш кошик очищено.")
+
+# LiqPay payment link generation for the cart
+@dp.message(Command('checkout'))
+async def checkout(message: Message):
+    cart = get_cart(message.from_user.id)
+    if not cart:
+        await message.reply("Ваш кошик порожній!")
+        return
+    
+    total_amount = sum([next(p['price'] for p in products if p['name'] == item) for item in cart])
+    order_id = f"order_{message.from_user.id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    payment_link = generate_payment_link(total_amount, "Ваше замовлення", order_id)
+
+    await message.reply(f"Сума до оплати: {total_amount} грн. Оплатіть за посиланням: {payment_link}")
+
+    with sqlite3.connect('shop.db') as conn:
+        c = conn.cursor()
+        c.execute('INSERT INTO purchases (user_id, product, price, date, status, order_id) VALUES (?, ?, ?, datetime("now"), ?, ?)', 
+                  (message.from_user.id, ', '.join(cart), total_amount, 'pending', order_id))
+        conn.commit()
 
 # LiqPay webhook handler
-logging.basicConfig(level=logging.INFO)  # Налаштування логування
+logging.basicConfig(level=logging.INFO)
 
 async def handle_webhook(request):
     data = await request.post()
@@ -103,7 +151,7 @@ async def handle_webhook(request):
 
     order_id = payment_info.get('order_id')
     status = payment_info.get('status')
-    user_id = order_id.split("_")[1]  # Отримуємо user_id з order_id
+    user_id = order_id.split("_")[1]
 
     logging.info(f"Order ID: {order_id}, Status: {status}")
 
