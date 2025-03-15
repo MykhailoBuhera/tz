@@ -36,7 +36,7 @@ def generate_payment_link(amount, description, order_id):
         'description': description,
         'order_id': order_id,
         'result_url': 'https://t.me/tzrobota_bot',
-        'server_url': 'https://2e79-95-46-140-42.ngrok-free.app/webhook'  # replace with your webhook URL
+        'server_url': 'https://07a5-95-46-140-42.ngrok-free.app/webhook'  # replace with your webhook URL
     }
     data_str = base64.b64encode(json.dumps(data).encode()).decode()
     signature = base64.b64encode(hashlib.sha1((PRIVATE_KEY + data_str + PRIVATE_KEY).encode()).digest()).decode()
@@ -46,14 +46,26 @@ def generate_payment_link(amount, description, order_id):
 def get_cart(user_id):
     with sqlite3.connect('shop.db') as conn:
         c = conn.cursor()
-        c.execute('SELECT product FROM cart WHERE user_id = ?', (user_id,))
-        return [row[0] for row in c.fetchall()]
+        c.execute('SELECT product, quantity FROM cart WHERE user_id = ?', (user_id,))
+        return c.fetchall()
 
 def add_to_cart(user_id, product_name):
     with sqlite3.connect('shop.db') as conn:
         c = conn.cursor()
-        c.execute('INSERT INTO cart (user_id, product) VALUES (?, ?)', (user_id, product_name))
+        # Перевіряємо, чи є товар у кошику
+        c.execute('SELECT quantity FROM cart WHERE user_id = ? AND product = ?', (user_id, product_name))
+        row = c.fetchone()
+        
+        if row:
+            # Якщо товар вже є, збільшуємо кількість
+            new_quantity = row[0] + 1
+            c.execute('UPDATE cart SET quantity = ? WHERE user_id = ? AND product = ?', (new_quantity, user_id, product_name))
+        else:
+            # Якщо товару немає, додаємо новий запис
+            c.execute('INSERT INTO cart (user_id, product, quantity) VALUES (?, ?, ?)', (user_id, product_name, 1))
+        
         conn.commit()
+
 
 def clear_cart(user_id):
     with sqlite3.connect('shop.db') as conn:
@@ -81,19 +93,21 @@ async def show_products(message: Message):
 
 # Add to cart command
 for product in products:
-    async def add_to_cart_command(message: Message, product=product):
-        add_to_cart(message.from_user.id, product['name'])
-        await message.reply(f"✅ {product['name']} додано до кошика!")
+    async def add_to_cart_command(message: Message, product_name=product["name"]):
+        await asyncio.sleep(0)  # Гарантує правильне виконання асинхронних викликів
+        add_to_cart(message.from_user.id, product_name)  # Виклик функції роботи з БД
+        await message.reply(f"✅ {product_name} додано до кошика!")
 
     dp.message.register(add_to_cart_command, Command(f'add_to_cart_{product["name"].replace(" ", "_")}'))
+
 
 # View cart command
 @dp.message(Command('view_cart'))
 async def view_cart(message: Message):
     cart = get_cart(message.from_user.id)
     if cart:
-        cart_items = "\n".join(cart)
-        await message.reply(f"Ваш кошик:\n{cart_items}")
+        cart_items = "\n".join([f"{item[0]} x{item[1]}" for item in cart])
+        await message.reply(f"🛒 Ваш кошик:\n{cart_items}")
     else:
         await message.reply("Ваш кошик порожній.")
 
@@ -111,7 +125,12 @@ async def checkout(message: Message):
         await message.reply("Ваш кошик порожній!")
         return
     
-    total_amount = sum([next(p['price'] for p in products if p['name'] == item) for item in cart])
+    total_amount = sum(
+    p['price'] * item[1]  # Ціна товару * його кількість у кошику
+    for item in cart
+    for p in products
+    if p['name'] == item[0]
+    )
     order_id = f"order_{message.from_user.id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     payment_link = generate_payment_link(total_amount, "Ваше замовлення", order_id)
 
@@ -151,22 +170,30 @@ async def handle_webhook(request):
 
     order_id = payment_info.get('order_id')
     status = payment_info.get('status')
-    user_id = order_id.split("_")[1]
+    
+    if not order_id:
+        logging.error("Missing order_id")
+        return web.Response(text='Missing order_id', status=400)
 
+    user_id = order_id.split("_")[1]  # Отримуємо user_id з order_id
     logging.info(f"Order ID: {order_id}, Status: {status}")
 
-    if status == 'success' and order_id:
+    if status == 'success':
         with sqlite3.connect('shop.db') as conn:
             c = conn.cursor()
             c.execute('UPDATE purchases SET status = ? WHERE order_id = ?', ('paid', order_id))
             conn.commit()
 
-        logging.info(f"Order {order_id} marked as paid")
+        # Очищаємо кошик після успішної оплати
+        clear_cart(user_id)
+
+        logging.info(f"Order {order_id} marked as paid and cart cleared for user {user_id}")
 
         async with Bot(token=TOKEN) as bot:
-            await bot.send_message(chat_id=user_id, text="✅ Дякуємо за покупку! Ваш платіж успішно отримано.")
+            await bot.send_message(chat_id=user_id, text="✅ Дякуємо за покупку! Ваш платіж успішно отримано. Кошик очищено.")
 
     return web.Response(text='OK')
+
 
 # Check payment command
 @dp.message(Command('check_payment'))
