@@ -23,14 +23,6 @@ dp.include_router(router)
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
 
-# Кнопки меню
-main_keyboard = ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
-    [KeyboardButton(text='🛍️ Переглянути товари')],
-    [KeyboardButton(text='🛒 Переглянути кошик')],
-    [KeyboardButton(text='🗑️ Очистити кошик')],
-    [KeyboardButton(text='💳 Оформити замовлення')]
-])
-
 # Товары
 products = [
     {'name': 'Product 1', 'description': 'Description 1', 'price': 10.0, 'photo': 'images/product1.jpg'},
@@ -53,9 +45,24 @@ def generate_payment_link(amount, order_id):
     signature = base64.b64encode(hashlib.sha1((PRIVATE_KEY + data_str + PRIVATE_KEY).encode()).digest()).decode()
     return f'https://www.liqpay.ua/api/3/checkout?data={data_str}&signature={signature}'
 
+# Main keyboard buttons (first stage)
+def get_main_keyboard():
+    return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
+        [KeyboardButton(text='🛍️ Переглянути товари')],
+        [KeyboardButton(text='🛒 Переглянути кошик')]
+    ])
+
+# Cart and order actions buttons (second stage)
+def get_cart_actions_keyboard():
+    return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
+        [KeyboardButton(text='💳 Оформити замовлення')],
+        [KeyboardButton(text='🗑️ Очистити кошик')],
+        [KeyboardButton(text='↩️ Назад')]
+    ])
+
 @router.message(Command('start'))
 async def start(message: Message):
-    await message.answer("Вітаю! Виберіть дію з меню:", reply_markup=main_keyboard)
+    await message.answer("Вітаю! Виберіть дію з меню:", reply_markup=get_main_keyboard())
 
 @router.message(F.text == '🛍️ Переглянути товари')
 async def show_products(message: Message):
@@ -84,11 +91,18 @@ async def view_cart(message: Message):
         cursor = await conn.cursor()
         await cursor.execute('SELECT product_name, quantity FROM cart WHERE user_id = ?', (message.from_user.id,))
         cart = await cursor.fetchall()
+    
     if cart:
         items = "\n".join([f"{item[0]} x{item[1]}" for item in cart])
         await message.answer(f"🛒 Ваш кошик:\n{items}")
     else:
         await message.answer("Ваш кошик порожній.")
+    
+    # Show new options: Order, Clear cart, and Back
+    await message.answer(
+        "Оберіть дію:",
+        reply_markup=get_cart_actions_keyboard()
+    )
 
 @router.message(F.text == '💳 Оформити замовлення')
 async def checkout(message: Message):
@@ -96,37 +110,55 @@ async def checkout(message: Message):
         cursor = await conn.cursor()
         await cursor.execute('SELECT product_name, quantity FROM cart WHERE user_id = ?', (message.from_user.id,))
         cart = await cursor.fetchall()
+    
     if not cart:
         await message.answer("Ваш кошик порожній!")
         return
+    
     total_amount = sum(p['price'] * item[1] for p in products for item in cart if p['name'] == item[0])
     order_id = f"order_{message.from_user.id}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     payment_link = generate_payment_link(total_amount, order_id)
     await message.answer(f"Сума до оплати: {total_amount} грн", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Оплатити", url=payment_link)]]))
+
+@router.message(F.text == '🗑️ Очистити кошик')
+async def clear_cart_action(user_id):
+    async with aiosqlite.connect('shop.db') as conn:
+        cursor = await conn.cursor()
+        # Use user_id directly, no need to access message.from_user.id
+        await cursor.execute('DELETE FROM cart WHERE user_id = ?', (user_id,))
+        await conn.commit()
 
 async def handle_webhook(request):
     data = await request.post()
     liqpay_data = data.get('data')
     if not liqpay_data:
         return web.Response(text='Invalid data', status=400)
+
     payment_info = json.loads(base64.b64decode(liqpay_data).decode('utf-8'))
     order_id = payment_info.get('order_id')
     status = payment_info.get('status')
+
     if order_id and status == 'success':
         user_id = order_id.split("_")[1]
         async with aiosqlite.connect('shop.db') as conn:
             cursor = await conn.cursor()
             await cursor.execute('UPDATE purchases SET status = ? WHERE order_id = ?', ('paid', order_id))
             await conn.commit()
-        await clear_cart(user_id)
+        
+        # Pass user_id directly to the function, not message object
+        await clear_cart_action(user_id)  # Now this should work
+
         await bot.send_message(chat_id=user_id, text="✅ Ваш платіж успішно отримано!")
+
     return web.Response(text='OK')
 
-async def clear_cart(user_id):
-    async with aiosqlite.connect('shop.db') as conn:
-        cursor = await conn.cursor()
-        await cursor.execute('DELETE FROM cart WHERE user_id = ?', (user_id,))
-        await conn.commit()
+
+@router.message(F.text == '↩️ Назад')
+async def back_to_main_menu(message: Message):
+    await message.answer(
+        "Виберіть дію:",
+        reply_markup=get_main_keyboard()
+    )
 
 async def main():
     app = web.Application()
