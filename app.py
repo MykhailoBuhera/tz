@@ -120,13 +120,32 @@ async def checkout(message: Message):
     payment_link = generate_payment_link(total_amount, order_id)
     await message.answer(f"Сума до оплати: {total_amount} грн", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Оплатити", url=payment_link)]]))
 
+class MessageMock:
+    def __init__(self, user_id):
+        self.from_user = type('User', (), {'id': user_id})
+
+    async def answer(self, text):
+        # Mocking the behavior of answering a message
+        print(f"Message sent to user {self.from_user.id}: {text}")
+
 @router.message(F.text == '🗑️ Очистити кошик')
-async def clear_cart_action(user_id):
+async def clear_cart_action(message: Message):
+    user_id = message.from_user.id  # Get the user_id from the Message object
     async with aiosqlite.connect('shop.db') as conn:
         cursor = await conn.cursor()
-        # Use user_id directly, no need to access message.from_user.id
-        await cursor.execute('DELETE FROM cart WHERE user_id = ?', (user_id,))
-        await conn.commit()
+
+        # Check if the user has any items in the cart
+        await cursor.execute('SELECT COUNT(*) FROM cart WHERE user_id = ?', (user_id,))
+        item_count = await cursor.fetchone()
+
+        if item_count[0] == 0:
+            # If the cart is empty, send a message to the user
+            await message.answer("🚫 Ваш кошик вже порожній!")
+        else:
+            # Otherwise, clear the cart
+            await cursor.execute('DELETE FROM cart WHERE user_id = ?', (user_id,))
+            await conn.commit()
+            await message.answer("🗑️ Ваш кошик був очищений!")
 
 async def handle_webhook(request):
     data = await request.post()
@@ -139,19 +158,20 @@ async def handle_webhook(request):
     status = payment_info.get('status')
 
     if order_id and status == 'success':
-        user_id = order_id.split("_")[1]
+        user_id = order_id.split("_")[1]  # This should be a string or integer
         async with aiosqlite.connect('shop.db') as conn:
             cursor = await conn.cursor()
             await cursor.execute('UPDATE purchases SET status = ? WHERE order_id = ?', ('paid', order_id))
             await conn.commit()
-        
-        # Pass user_id directly to the function, not message object
-        await clear_cart_action(user_id)  # Now this should work
+
+        # Create a mock message object to pass the user_id
+        message = MessageMock(user_id)
+        # Now pass the mock message object to the function
+        await clear_cart_action(message)  # Passing the whole Message object
 
         await bot.send_message(chat_id=user_id, text="✅ Ваш платіж успішно отримано!")
 
     return web.Response(text='OK')
-
 
 @router.message(F.text == '↩️ Назад')
 async def back_to_main_menu(message: Message):
